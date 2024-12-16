@@ -167,7 +167,7 @@ def remove_redundant (prog : List Stmt) : List Expr :=
                   | some (BBlock _ code _) => contains_ptr ptr1 code
                 )).any id
     (dominate ptr1 ptr2 forward dom || dominate ptr2 ptr1 forward dom ||
-     dominate ptr1 ptr2 backward postdom || dominate ptr2 ptr1 backward postdom)
+    dominate ptr1 ptr2 backward postdom || dominate ptr2 ptr1 backward postdom)
 
   let rec exists_redundant
     (ptrs : List Expr)
@@ -221,21 +221,25 @@ def instrument
         | gep (struct _) _ _ => false
         | _ => true
       )
+  let (cfg, _) := create_cfgs prog
 
   let rec go
     (prog : List Stmt)
     (instrumented : List Stmt)
+    (seen : List Expr)
     : List Stmt :=
     match prog with
     | [] => instrumented.reverse
     | stmt::stmts =>
         match stmt with
         | asgn s (gep ty base offset) =>
-            if ptrs.contains (gep ty base offset) then
-              go stmts ((check_range base s (sizeof ty))::asgn s (gep ty base offset)::instrumented)
+            let ptr := (gep ty base offset)
+            if ptrs.contains ptr && !seen.contains ptr then
+              go stmts ((check_range base s (sizeof ty))::asgn s ptr::instrumented) (ptr::seen)
             else
-              go stmts (asgn s (gep ty base offset)::instrumented)
+              go stmts (asgn s ptr::instrumented) (ptr::seen)
         | asgn s (malloc ty sz) =>
-            go stmts ((check_range s s (sizeof ty))::(asgn s (malloc ty sz))::instrumented)
-        | stmt => go stmts (stmt::instrumented)
-  go prog []
+            go stmts ((check_range s s (sizeof ty))::(asgn s (malloc ty sz))::instrumented) seen
+        | stmt => go stmts (stmt::instrumented) seen
+  let instrumented := cfg.map (fun (BBlock lab code children) => (BBlock lab (go code [] []) children))
+  (instrumented.map (fun (BBlock _ code _) => code)).join
