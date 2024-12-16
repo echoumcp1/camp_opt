@@ -1,65 +1,10 @@
 import Lean
-
-inductive Ty :=
-| i32
-| i1
-| struct (fields : List Ty)
-| pointer (typ : Ty)
-| array (typ : Ty) (sz : Nat)
-deriving Repr, BEq
-
-inductive Expr :=
-| num (n : Nat)
-| malloc (ty : Ty) (sz : Nat)
-| gep (ty : Ty) (base : String) (offset : Nat)
-| load (ty : Ty) (ptr : String)
-| alloca (ty : Ty)
-deriving Repr, BEq
-
-inductive Stmt :=
-| label (lab : String)
-| store (ty : Ty) (value : Nat) (var : String)
-| asgn (e1 : String) (e2 : Expr)
-| free (e : String)
-| bitcast (e : String) (ty : Ty)
-| check_range (base : String) (offset : String) (sz : Nat)
-| escape (addr : Expr) (name : String)
-| br (label : String)
-| br_cond (cond : String) (t_branch : String) (f_branch : String)
-deriving Repr, BEq
-
-inductive Block
-| BBlock (label : String) (code : List Stmt) (children : List String)
-deriving Repr, BEq
-
-abbrev CFG := List Block
+import «Final».Infra
 
 open Expr
 open Stmt
 open Ty
 open Block
-
-def sizeof : Ty -> Nat
-| i1 => 1
-| i32 | pointer _ => 4
-| struct fields => fold fields 0
-| array ty sz => sizeof ty * sz
-where fold : List Ty → Nat → Nat
-  | [], n => n
-  | (t :: ts), n => fold ts (sizeof t + n)
-
-def replace_offset (ptr : Expr) (offset : Nat) : Expr :=
-  match ptr with
-  | gep ty base _ => gep ty base offset
-  | _ => num 0 -- impossible case
-
-def get_offset : Expr -> Nat
-  | gep _ _ offset => offset
-  | _ => 0 -- impossible case
-
-def get_base : Expr -> String
-  | gep _ base _ => base
-  | _ => "impossible case"
 
 def get_new_ptr_set
   (prog : List Stmt)
@@ -100,8 +45,12 @@ def pred
   : List String :=
   cfg.foldr (fun (BBlock lab _ children) acc => if children.contains node then lab::acc else acc) []
 
+
 def create_cfgs (prog : List Stmt) : CFG × CFG :=
-  let rec init_pass (prog : List Stmt) (curr_block : List Stmt) :=
+  let rec init_pass
+    (prog : List Stmt)
+    (curr_block : List Stmt)
+    : List Block :=
     match prog with
     | [] => [BBlock "" curr_block.reverse []]
     | stmt::stmts =>
@@ -109,7 +58,9 @@ def create_cfgs (prog : List Stmt) : CFG × CFG :=
       | br lab => (BBlock "" (stmt::curr_block).reverse [lab])::init_pass stmts []
       | br_cond _ t_branch f_branch => (BBlock "" (stmt::curr_block).reverse [t_branch, f_branch])::init_pass stmts []
       | stmt => init_pass stmts (stmt::curr_block)
+
   let blocks := (init_pass prog [])
+
   let forward := List.map
     (fun (BBlock _ block children) =>
       match block with
@@ -120,6 +71,7 @@ def create_cfgs (prog : List Stmt) : CFG × CFG :=
     (fun (BBlock lab block _) =>
       BBlock lab block (pred forward lab)
     )).reverse
+
   (forward, backward)
 
 def compute_doms (cfg : CFG) :=
@@ -287,49 +239,3 @@ def instrument
             go stmts ((check_range s s (sizeof ty))::(asgn s (malloc ty sz))::instrumented)
         | stmt => go stmts (stmt::instrumented)
   go prog []
-
-def program1 :=
-  [
-    label "entry",
-    asgn "$0" (malloc i32 16),
-    asgn "$1" (gep (pointer i32) "$0" 32),
-    store i32 120 "$1",
-    free "$0",
-    asgn "$2" (gep (pointer i32) "$0" 1),
-    store i32 121 "$2"
-  ]
-
-def program2 :=
-  [
-    label "entry",
-    asgn "$0" (malloc (struct [i32, i32]) (sizeof (struct [i32, i32]))),
-    asgn "$1" (gep (struct [pointer i32]) "$0" 0),
-    store i32 1 "$1",
-    asgn "$2" (gep (struct [pointer i32]) "$0" 4),
-    store i32 2 "$2"
-  ]
-
-def program3 :=
-  [
-    label "entry",
-    asgn "$0" (malloc (struct [pointer i32]) 100),
-    asgn "$1" (gep (struct [pointer i32]) "$0" 0),
-    asgn "$2" (gep (pointer i32) "$1" 100),
-    store i32 120 "$2", -- ptr->mem[100] = 'x'
-    asgn "$3" (alloca i1),
-    store i1 1 "$3",
-    br_cond "$3" "if.true" "end",
-    label "if.true",
-    asgn "$4" (gep (pointer i32) "$1" 30),
-    store i32 121 "$4", -- ptr->mem[30] = 'y'
-    asgn "$5" (gep (pointer i32) "$1" 1),
-    store i32 121 "$5", -- ptr->mem[1] = 'y'
-    br "end",
-    label "end",
-    asgn "$6" (gep (pointer i32) "$1" 1),
-    store i32 122 "$6" -- ptr->mem[1] = 'z'
-  ]
-
-#eval (instrument program1)
-#eval (instrument program2)
-#eval (instrument program3)
